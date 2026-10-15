@@ -419,7 +419,7 @@ func (m *LightsailCFJob) processBannedItem(bannedItem *api.BannedHostInfo) {
 		if out.Instance == nil {
 			return "", fmt.Errorf("refresh instance %s: empty response", *inst.Name)
 		}
-		newIp, err := m.processInstance(*out.Instance)
+		newIp, err := m.processInstance(*out.Instance, bannedItem.Type)
 		if err != nil {
 			return "", err
 		}
@@ -556,8 +556,39 @@ func (m *LightsailCFJob) changeIp(bannedItem *api.BannedHostInfo, newIp string) 
 	return m.apiClient.ChangeIP(bannedItem.Type, bannedItem.ID, bannedItem.IP, newIp)
 }
 
-func (m *LightsailCFJob) processInstance(instance types.Instance) (newIP *string, err error) {
+// selectIPRotation keeps Mieru on dynamic addresses, including future rotations.
+func selectIPRotation(serverType string, isStatic bool, staticCount int) string {
+	if serverType == "mieru" {
+		if isStatic {
+			return "release_restart"
+		}
+		return "restart"
+	}
+	if isStatic {
+		return "release"
+	}
+	if staticCount >= service.LightsailMaxStaticIp {
+		return "restart"
+	}
+	return "allocate"
+}
+
+func (m *LightsailCFJob) processInstance(instance types.Instance, serverType string) (newIP *string, err error) {
 	log.Infof("process instance {name: %s, ip: %s}", *instance.Name, *instance.PublicIpAddress)
+
+	if serverType == "mieru" {
+		m.staticIpMu.Lock()
+		mode := selectIPRotation(serverType, *instance.IsStaticIp, m.lenStaticIps())
+		if mode == "release_restart" {
+			_, err = m.processInstanceReleaseStaticIp(instance)
+		}
+		m.staticIpMu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		log.Infof("{name: %s} Mieru requires dynamic IP; stop/start rotation", *instance.Name)
+		return m.processInstanceMustRestart(instance)
+	}
 
 	if *instance.IsStaticIp {
 		log.Infof("{name: %s, ip: %s} must be release static ip", *instance.Name, *instance.PublicIpAddress)
@@ -687,4 +718,14 @@ func (m *LightsailCFJob) lenStaticIps() int {
 		return true
 	})
 	return i
+}
+
+// RotationLockPath shares legacy cron fencing with the opt-in daemon.
+func RotationLockPath(tags []string) string {
+	return lockFilePath(&LightsailCFJobConfig{QueryTags: tags})
+}
+
+// SelectIPRotation exposes the existing Mieru-safe strategy to durable workers.
+func SelectIPRotation(serverType string, isStatic bool, staticCount int) string {
+	return selectIPRotation(serverType, isStatic, staticCount)
 }

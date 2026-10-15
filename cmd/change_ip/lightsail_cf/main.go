@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
+	"github.com/redis/go-redis/v9"
+	"github.com/theckman/go-flock"
+	"github.com/xflash-panda/v2board-op/internal/app/rotation"
 	"io"
 	"os"
 	"os/signal"
@@ -17,7 +22,7 @@ import (
 
 const (
 	Name                       = "change-ip(lightsail-cf)"
-	Version                    = "0.5.2"
+	Version                    = "0.6.0"
 	CopyRight                  = "XFLASH-PANDA@2023"
 	DefaultJobMaxTryNum    int = 5
 	DefaultLightsailRegion     = "ap-northeast-1"
@@ -54,6 +59,13 @@ func main() {
 		Usage:       "Automatically change IP script for the v2Board",
 		Description: "This script is only used for nodes using lightsail and cloudflare dns",
 		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "daemon", Usage: "Enable durable rotation daemon (off by default)", EnvVars: []string{"ROTATION_DAEMON"}},
+			&cli.StringFlag{Name: "rotation_redis_addr", Value: "127.0.0.1:6379", EnvVars: []string{"ROTATION_REDIS_ADDR"}},
+			&cli.StringFlag{Name: "rotation_redis_username", EnvVars: []string{"ROTATION_REDIS_USERNAME"}},
+			&cli.StringFlag{Name: "rotation_redis_password", EnvVars: []string{"ROTATION_REDIS_PASSWORD"}},
+			&cli.IntFlag{Name: "rotation_redis_db", EnvVars: []string{"ROTATION_REDIS_DB"}},
+			&cli.BoolFlag{Name: "rotation_redis_tls", EnvVars: []string{"ROTATION_REDIS_TLS"}},
+			&cli.StringFlag{Name: "worker_id", EnvVars: []string{"ROTATION_WORKER_ID"}},
 			&cli.StringFlag{
 				Name:        "api",
 				Usage:       "Server address",
@@ -141,6 +153,33 @@ func main() {
 			return util.SetupLogger(logLevel)
 		},
 		Action: func(c *cli.Context) error {
+			if c.Bool("daemon") {
+				ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+				defer cancel()
+				// The same regional/tag lock used by legacy cron fences mixed deployments.
+				lock := flock.New(change_ip.RotationLockPath(serverQueryTags.Value()))
+				ok, err := lock.TryLock()
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("regional rotation lock is held")
+				}
+				defer lock.Unlock()
+				options := &redis.Options{Addr: c.String("rotation_redis_addr"), Username: c.String("rotation_redis_username"), Password: c.String("rotation_redis_password"), DB: c.Int("rotation_redis_db")}
+				if c.Bool("rotation_redis_tls") {
+					options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+				}
+				redisClient := redis.NewClient(options)
+				defer redisClient.Close()
+				worker := c.String("worker_id")
+				if worker == "" {
+					host, _ := os.Hostname()
+					worker = fmt.Sprintf("%s-%d", host, os.Getpid())
+				}
+				daemon := rotation.Daemon{API: &rotation.Client{BaseURL: apiConfig.APIHost, Token: apiConfig.Token}, Wake: &rotation.RedisWake{Client: redisClient}, Tags: serverQueryTags.Value(), WorkerID: worker, Concurrency: lightsailCFJobConfig.Concurrency, NewCloud: func() (rotation.Cloud, error) { return rotation.NewSDKCloud(lightsailSrvConfig, cloudflreSrvConfig) }}
+				return daemon.Run(ctx)
+			}
 			log.Debugln("api host: ", apiConfig.APIHost)
 			log.Debugln("api token: ", apiConfig.Token)
 			if len(lightsailSrvConfig.Key) > 0 {

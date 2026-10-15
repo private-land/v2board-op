@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/lightsail v1.28.5
 	github.com/cloudflare/cloudflare-go v0.76.0
 	github.com/go-resty/resty/v2 v2.7.0
+	github.com/redis/go-redis/v9 v9.17.3
 	github.com/sirupsen/logrus v1.9.3
 	github.com/theckman/go-flock v0.8.1
 	github.com/urfave/cli/v2 v2.25.7
@@ -25,7 +26,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.15.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.21.5 // indirect
 	github.com/aws/smithy-go v1.14.2 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
