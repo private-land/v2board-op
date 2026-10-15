@@ -30,7 +30,7 @@ func TestMieruSDKUsesOnlyDynamicPrimitives(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"instance": map[string]any{"name": "actual-instance", "publicIpAddress": ip, "isStaticIp": false, "state": map[string]string{"name": "running"}}})
 		case "GetStaticIps":
-			w.Write([]byte(`{"staticIps":[]}`))
+			_, _ = w.Write([]byte(`{"staticIps":[]}`))
 		case "GetInstanceState":
 			state := "stopped"
 			if newIP {
@@ -39,9 +39,9 @@ func TestMieruSDKUsesOnlyDynamicPrimitives(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"state": map[string]string{"name": state}})
 		case "StartInstance":
 			newIP = true
-			w.Write([]byte(`{}`))
+			_, _ = w.Write([]byte(`{}`))
 		case "StopInstance":
-			w.Write([]byte(`{}`))
+			_, _ = w.Write([]byte(`{}`))
 		default:
 			t.Errorf("forbidden SDK operation %s", op)
 			w.WriteHeader(400)
@@ -63,7 +63,7 @@ func TestResumedDNSAcquiresInstanceLockAndPreservesEveryReference(t *testing.T) 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Amz-Target") != "" {
 			w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-			w.Write([]byte(`{"instance":{"name":"stub-dns-resume","publicIpAddress":"2.2.2.2","isStaticIp":false,"state":{"name":"running"}}}`))
+			_, _ = w.Write([]byte(`{"instance":{"name":"stub-dns-resume","publicIpAddress":"2.2.2.2","isStaticIp":false,"state":{"name":"running"}}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -117,7 +117,7 @@ func TestResumedDNSAcquiresInstanceLockAndPreservesEveryReference(t *testing.T) 
 	cf.BaseURL = server.URL
 	client := lightsail.NewFromConfig(aws.Config{Region: "ap-northeast-2", Credentials: credentials.NewStaticCredentialsProvider("test", "test", "")}, func(o *lightsail.Options) { o.BaseEndpoint = aws.String(server.URL) })
 	c := &SDKCloud{CF: cf, AWS: client}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	v := task()
 	v.InstanceName = "stub-dns-resume"
 	v.TargetIP = "2.2.2.2"
@@ -141,9 +141,9 @@ func TestSDKFenceStopsMutationAfterLeaseLoss(t *testing.T) {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 		switch op {
 		case "GetInstance":
-			w.Write([]byte(`{"instance":{"name":"fenced-instance","publicIpAddress":"1.1.1.1","isStaticIp":false}}`))
+			_, _ = w.Write([]byte(`{"instance":{"name":"fenced-instance","publicIpAddress":"1.1.1.1","isStaticIp":false}}`))
 		case "GetStaticIps":
-			w.Write([]byte(`{"staticIps":[]}`))
+			_, _ = w.Write([]byte(`{"staticIps":[]}`))
 		default:
 			mutations++
 			w.WriteHeader(400)
@@ -164,7 +164,7 @@ func TestSDKFenceStopsMutationAfterLeaseLoss(t *testing.T) {
 func TestAWSStateWaitHasDeadline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-		w.Write([]byte(`{"state":{"name":"pending"}}`))
+		_, _ = w.Write([]byte(`{"state":{"name":"pending"}}`))
 	}))
 	defer server.Close()
 	client := lightsail.NewFromConfig(aws.Config{Region: "ap-northeast-2", Credentials: credentials.NewStaticCredentialsProvider("test", "test", "")}, func(o *lightsail.Options) { o.BaseEndpoint = aws.String(server.URL) })
@@ -178,12 +178,12 @@ func TestAWSStateWaitHasDeadline(t *testing.T) {
 func TestMieruRecoveredIPMustBeDynamic(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-		w.Write([]byte(`{"instance":{"name":"mieru-static-recovery","publicIpAddress":"2.2.2.2","isStaticIp":true,"state":{"name":"running"}}}`))
+		_, _ = w.Write([]byte(`{"instance":{"name":"mieru-static-recovery","publicIpAddress":"2.2.2.2","isStaticIp":true,"state":{"name":"running"}}}`))
 	}))
 	defer server.Close()
 	client := lightsail.NewFromConfig(aws.Config{Region: "ap-northeast-2", Credentials: credentials.NewStaticCredentialsProvider("test", "test", "")}, func(o *lightsail.Options) { o.BaseEndpoint = aws.String(server.URL) })
 	c := &SDKCloud{AWS: client}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	v := task()
 	v.InstanceName = "mieru-static-recovery"
 	v.Stage = "rotating"

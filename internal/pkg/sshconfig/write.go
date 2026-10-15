@@ -52,13 +52,13 @@ func (c *Config) ApplyAndWrite(path string, updates []Update) (string, error) {
 	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
 	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
-		os.Remove(backup)
+		_ = os.Remove(backup)
 		return "", fmt.Errorf("open temp: %w", err)
 	}
 	if _, err := io.WriteString(out, strings.Join(newLines, "\n")); err != nil {
-		out.Close()
-		os.Remove(tmp)
-		os.Remove(backup)
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		_ = os.Remove(backup)
 		return "", fmt.Errorf("write temp: %w", err)
 	}
 	// Append a trailing newline when the file is non-empty.
@@ -68,19 +68,19 @@ func (c *Config) ApplyAndWrite(path string, updates []Update) (string, error) {
 	// SSH config does not assign meaning to trailing whitespace.
 	if len(c.Lines) > 0 {
 		if _, err := io.WriteString(out, "\n"); err != nil {
-			out.Close()
-			os.Remove(tmp)
-			os.Remove(backup)
+			_ = out.Close()
+			_ = os.Remove(tmp)
+			_ = os.Remove(backup)
 			return "", err
 		}
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmp)
-		os.Remove(backup)
+		_ = os.Remove(tmp)
+		_ = os.Remove(backup)
 		return "", err
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return "", fmt.Errorf("rename: %w", err)
 	}
 	return backup, nil
@@ -99,13 +99,13 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	return out.Close()

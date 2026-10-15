@@ -74,7 +74,7 @@ func (c *SDKCloud) Inspect(ctx context.Context, t *Task) (string, error) {
 		if *v.PublicIpAddress != t.SourceIP {
 			for _, ref := range t.Targets {
 				if ref.Type == "mieru" && (v.IsStaticIp == nil || *v.IsStaticIp) {
-					return "", errors.New("Mieru recovered IP must be dynamic; manual inspection required")
+					return "", errors.New("mieru recovered IP must be dynamic; manual inspection required")
 				}
 			}
 		}

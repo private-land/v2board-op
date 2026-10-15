@@ -25,7 +25,7 @@ type Executor struct {
 
 func (e *Executor) Execute(parent context.Context, task *Task, heartbeat time.Duration) {
 	if closer, ok := e.Cloud.(interface{ Close() error }); ok {
-		defer closer.Close()
+		defer func() { _ = closer.Close() }()
 	}
 	timeout := e.TaskTimeout
 	if timeout <= 0 {

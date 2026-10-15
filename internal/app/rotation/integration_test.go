@@ -27,7 +27,7 @@ func TestLaravelRedisIntegration(t *testing.T) {
 	observed := &fixtureAPI{Client: client, claimed: map[string]time.Time{}, finished: map[string]string{}}
 	state := &fixtureCloudState{base: base, rotations: map[string]int{}, dns: map[string]int{}, ips: map[string]string{}}
 	redisClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:16389", DB: 15})
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
 	wake := &fixtureWake{RedisWake: &RedisWake{Client: redisClient}}
@@ -129,6 +129,7 @@ func TestLaravelRedisIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
 	go func() { stopped <- daemon.Run(ctx) }()
 	fixturePost(t, base, "expedite", map[string]any{"task_id": created.ID}, nil)
 	waitFixture(t, 10*time.Second, func() bool {
@@ -274,7 +275,7 @@ func fixtureRequest(ctx context.Context, base, path string, input, out any) erro
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != 200 {
 		return fmt.Errorf("fixture %s status %d", path, res.StatusCode)
 	}

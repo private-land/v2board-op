@@ -82,7 +82,7 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	if err != nil {
 		return errors.New("rotation API transport failure")
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode == 409 {
 		return ErrLeaseLost
 	}

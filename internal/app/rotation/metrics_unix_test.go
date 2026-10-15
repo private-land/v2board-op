@@ -22,7 +22,7 @@ func TestLaravelRedisIdleBudget(t *testing.T) {
 	client := &Client{BaseURL: base, Token: "rotation-fixture-token"}
 	api := &fixtureAPI{Client: client, claimed: map[string]time.Time{}, finished: map[string]string{}}
 	redisClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:16389", DB: 15})
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 	var initialized atomic.Int64
 	daemon := &Daemon{API: api, Wake: &RedisWake{Client: redisClient}, Tags: []string{"lightsail_cf-fixture"}, WorkerID: "idle-budget", Concurrency: 3, NewCloud: func() (Cloud, error) {
 		initialized.Add(1)

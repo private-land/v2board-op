@@ -165,13 +165,13 @@ func main() {
 				if !ok {
 					return fmt.Errorf("regional rotation lock is held")
 				}
-				defer lock.Unlock()
+				defer func() { _ = lock.Unlock() }()
 				options := &redis.Options{Addr: c.String("rotation_redis_addr"), Username: c.String("rotation_redis_username"), Password: c.String("rotation_redis_password"), DB: c.Int("rotation_redis_db")}
 				if c.Bool("rotation_redis_tls") {
 					options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 				}
 				redisClient := redis.NewClient(options)
-				defer redisClient.Close()
+				defer func() { _ = redisClient.Close() }()
 				worker := c.String("worker_id")
 				if worker == "" {
 					host, _ := os.Hostname()

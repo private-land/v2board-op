@@ -66,7 +66,9 @@ func TestApplyAndWrite_PreservesIndent(t *testing.T) {
 	original := "Host alpha\n\tHostName 1.1.1.1\n"
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")
-	os.WriteFile(path, []byte(original), 0o600)
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, _ := Parse(path)
 	updates := []Update{{Alias: "alpha", NewIP: "9.9.9.9", Line: cfg.Blocks[0].HostNameLine}}
@@ -83,11 +85,15 @@ func TestApplyAndWrite_PreservesIndent(t *testing.T) {
 func TestApplyAndWrite_PreservesMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")
-	os.WriteFile(path, []byte("Host a\n    HostName 1.1.1.1\n"), 0o600)
+	if err := os.WriteFile(path, []byte("Host a\n    HostName 1.1.1.1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, _ := Parse(path)
 	updates := []Update{{Alias: "a", NewIP: "9.9.9.9", Line: cfg.Blocks[0].HostNameLine}}
-	cfg.ApplyAndWrite(path, updates)
+	if _, err := cfg.ApplyAndWrite(path, updates); err != nil {
+		t.Fatal(err)
+	}
 
 	info, _ := os.Stat(path)
 	if info.Mode().Perm() != fs.FileMode(0o600) {
@@ -99,7 +105,9 @@ func TestApplyAndWrite_NoUpdatesIsNoOp(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")
 	original := "Host a\n    HostName 1.1.1.1\n"
-	os.WriteFile(path, []byte(original), 0o600)
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, _ := Parse(path)
 	backup, err := cfg.ApplyAndWrite(path, nil)
