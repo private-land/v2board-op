@@ -14,6 +14,8 @@ type fakeAPI struct {
 	stages       []string
 	outcome      string
 	heartbeatErr error
+	reportErr    error
+	reports      int
 }
 
 func (f *fakeAPI) Config(context.Context, []string) (Config, error) {
@@ -25,6 +27,7 @@ func (f *fakeAPI) Claim(context.Context, []string, string) (*Task, error) {
 	return v, nil
 }
 func (f *fakeAPI) Heartbeat(context.Context, *Task) error { return f.heartbeatErr }
+func (f *fakeAPI) ChangeIP(context.Context, *Task) error  { f.reports++; return f.reportErr }
 func (f *fakeAPI) Progress(_ context.Context, t *Task, stage, ip string) (*Task, error) {
 	v := *t
 	v.Stage = stage
@@ -188,7 +191,7 @@ func TestSavedIPExternallyChangedNeverUpdatesDNS(t *testing.T) {
 	v.TargetIP = "2.2.2.2"
 	v.Stage = "ip_acquired"
 	(&Executor{API: a, Cloud: c}).Execute(context.Background(), v, time.Second)
-	if c.dns != 0 || c.rotations != 0 || a.outcome != "retry" {
+	if c.dns != 0 || c.rotations != 0 || a.outcome != "superseded" {
 		t.Fatalf("dns=%d rotations=%d outcome=%s", c.dns, c.rotations, a.outcome)
 	}
 }
@@ -201,5 +204,89 @@ func TestTaskTimeoutBoundsCloudWait(t *testing.T) {
 	e.Execute(context.Background(), task(), time.Second)
 	if time.Since(start) > time.Second || c.dns != 0 {
 		t.Fatal("task timeout did not bound cloud wait")
+	}
+}
+
+type unregisteredAPI struct{ *fakeAPI }
+
+func (a *unregisteredAPI) Progress(ctx context.Context, task *Task, stage, ip string) (*Task, error) {
+	v, err := a.fakeAPI.Progress(ctx, task, stage, ip)
+	if v != nil {
+		v.RegistrationReady = false
+	}
+	return v, err
+}
+
+func TestAWSRotationCompletesWithoutRegistration(t *testing.T) {
+	yes := true
+	a := &unregisteredAPI{&fakeAPI{probes: map[string]*bool{"2.2.2.2:443": &yes}}}
+	c := &fakeCloud{current: "2.2.2.2"}
+	v := task()
+	v.TargetIP = "2.2.2.2"
+	v.Stage = "ip_acquired"
+	(&Executor{API: a, Cloud: c}).Execute(context.Background(), v, time.Second)
+	if a.outcome != "completed" || c.rotations != 0 || c.dns != 1 || a.reports != 1 {
+		t.Fatalf("outcome=%s rotations=%d dns=%d", a.outcome, c.rotations, c.dns)
+	}
+}
+
+func TestPanelIPUpdateFailurePreservesSavedIPForRetry(t *testing.T) {
+	a := &fakeAPI{reportErr: errors.New("panel update failed")}
+	c := &fakeCloud{current: "2.2.2.2"}
+	v := task()
+	v.TargetIP = "2.2.2.2"
+	v.Stage = "ip_acquired"
+	(&Executor{API: a, Cloud: c}).Execute(context.Background(), v, time.Second)
+	if a.outcome != "retry" || a.reports != 1 || c.rotations != 0 || c.dns != 0 {
+		t.Fatalf("outcome=%s reports=%d rotations=%d dns=%d", a.outcome, a.reports, c.rotations, c.dns)
+	}
+}
+
+type noTargetProbeAPI struct {
+	*fakeAPI
+	t            *testing.T
+	sourceProbes int
+}
+
+func (a *noTargetProbeAPI) Probe(_ context.Context, hosts []Host) (map[string]*bool, error) {
+	for _, host := range hosts {
+		if host.Host != "1.1.1.1" {
+			a.t.Fatal("IP-change completion must not probe target reachability")
+		}
+	}
+	a.sourceProbes++
+	return a.probes, nil
+}
+
+func (a *noTargetProbeAPI) Finish(ctx context.Context, task *Task, outcome, reason string) error {
+	if reason != "" {
+		a.t.Fatalf("successful IP change returned an error: %s", reason)
+	}
+	return a.fakeAPI.Finish(ctx, task, outcome, reason)
+}
+
+func TestIPChangeCompletesWithoutTargetProbe(t *testing.T) {
+	for _, stage := range []string{"ip_acquired", "dns_updated", "verified"} {
+		t.Run(stage, func(t *testing.T) {
+			a := &noTargetProbeAPI{fakeAPI: &fakeAPI{}, t: t}
+			c := &fakeCloud{current: "2.2.2.2"}
+			v := task()
+			v.TargetIP = "2.2.2.2"
+			v.Stage = stage
+			(&Executor{API: a, Cloud: c}).Execute(context.Background(), v, time.Second)
+			if a.outcome != "completed" || a.reports != 1 || c.dns != 1 || c.rotations != 0 || a.sourceProbes != 0 {
+				t.Fatalf("outcome=%s reports=%d dns=%d rotations=%d", a.outcome, a.reports, c.dns, c.rotations)
+			}
+		})
+	}
+}
+
+func TestFreshIPChangeOnlyProbesSource(t *testing.T) {
+	no := false
+	a := &noTargetProbeAPI{fakeAPI: &fakeAPI{probes: map[string]*bool{"1.1.1.1:443": &no}}, t: t}
+	c := &fakeCloud{current: "1.1.1.1"}
+	(&Executor{API: a, Cloud: c}).Execute(context.Background(), task(), time.Second)
+	if a.outcome != "completed" || a.reports != 1 || c.dns != 1 || c.rotations != 1 || a.sourceProbes != 1 {
+		t.Fatalf("outcome=%s reports=%d dns=%d rotations=%d source_probes=%d", a.outcome, a.reports, c.dns, c.rotations, a.sourceProbes)
 	}
 }

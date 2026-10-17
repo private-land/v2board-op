@@ -103,6 +103,44 @@ func TestLaravelRedisIntegration(t *testing.T) {
 		t.Fatalf("delivery objective missed P95=%.2f P99=%.2f", p95, p99)
 	}
 
+	// Simulate the agent unregistering during stop/start. A rebuilt registration
+	// must not strand DNS on the old IP; a registration gap must not block it.
+	for _, mode := range []string{"rebuild", "gap"} {
+		state.mu.Lock()
+		state.registrationMode = mode
+		state.mu.Unlock()
+		var created struct {
+			ID string `json:"id"`
+		}
+		fixturePost(t, base, "enqueue", map[string]any{}, &created)
+		waitFixture(t, 10*time.Second, func() bool {
+			observed.mu.Lock()
+			defer observed.mu.Unlock()
+			return observed.finished[created.ID] == "completed"
+		})
+		var result struct {
+			Task              Task  `json:"task"`
+			Logs              int   `json:"logs"`
+			RegistrationIDs   []int `json:"registration_ids"`
+			RegistrationReady bool  `json:"registration_ready"`
+		}
+		fixturePost(t, base, "task", map[string]any{"task_id": created.ID}, &result)
+		state.mu.Lock()
+		rotations, dns := state.rotations[created.ID], state.dns[created.ID]
+		state.mu.Unlock()
+		if rotations != 1 || dns != 1 || result.Logs != 1 || result.Task.Stage != "dns_updated" {
+			t.Fatalf("%s follow-up: rotations=%d dns=%d result=%+v", mode, rotations, dns, result)
+		}
+		if mode == "rebuild" {
+			if len(result.RegistrationIDs) != 1 || !result.RegistrationReady {
+				t.Fatalf("rebuilt registration not recognized: %+v", result)
+			}
+		} else if len(result.RegistrationIDs) != 0 || result.RegistrationReady {
+			t.Fatalf("registration gap falsely reported ready: %+v", result)
+		}
+		t.Logf("%s: panel receipt, DNS update and completion; exactly one cloud rotation", mode)
+	}
+
 	// Fail DNS after obtaining an IP. The durable checkpoint must survive a retry.
 	state.mu.Lock()
 	state.failNextDNS = true
@@ -117,11 +155,16 @@ func TestLaravelRedisIntegration(t *testing.T) {
 		return observed.finished[created.ID] == "retry"
 	})
 	var pending struct {
-		Task Task `json:"task"`
+		Task            Task     `json:"task"`
+		Logs            int      `json:"logs"`
+		RegistrationIPs []string `json:"registration_ips"`
 	}
 	fixturePost(t, base, "task", map[string]any{"task_id": created.ID}, &pending)
 	if pending.Task.Stage != "ip_acquired" || pending.Task.TargetIP == "" {
 		t.Fatalf("missing durable checkpoint: %+v", pending.Task)
+	}
+	if pending.Logs != 1 || len(pending.RegistrationIPs) != 1 || pending.RegistrationIPs[0] != pending.Task.TargetIP {
+		t.Fatalf("changeIp did not commit before DNS/agent registration: %+v", pending)
 	}
 	// Stop the entire consumer, then resume from the persisted checkpoint.
 	cancel()
@@ -216,12 +259,13 @@ func (f *fixtureAPI) Finish(ctx context.Context, task *Task, outcome, reason str
 }
 
 type fixtureCloudState struct {
-	mu             sync.Mutex
-	base           string
-	rotations, dns map[string]int
-	ips            map[string]string
-	initialized    int
-	failNextDNS    bool
+	mu               sync.Mutex
+	base             string
+	rotations, dns   map[string]int
+	ips              map[string]string
+	initialized      int
+	failNextDNS      bool
+	registrationMode string
 }
 type fixtureCloud struct{ s *fixtureCloudState }
 
@@ -236,10 +280,17 @@ func (f *fixtureCloud) Inspect(ctx context.Context, task *Task) (string, error) 
 }
 func (f *fixtureCloud) Rotate(ctx context.Context, task *Task) (string, error) {
 	f.s.mu.Lock()
-	defer f.s.mu.Unlock()
 	f.s.rotations[task.ID]++
 	ip := "198.51.100.42"
 	f.s.ips[task.ID] = ip
+	mode := f.s.registrationMode
+	f.s.registrationMode = ""
+	f.s.mu.Unlock()
+	if mode != "" {
+		if err := fixtureRequest(ctx, f.s.base, "reregister", map[string]any{"task_id": task.ID, "ip": ip, "mode": mode}, nil); err != nil {
+			return "", err
+		}
+	}
 	return ip, nil
 }
 func (f *fixtureCloud) DNS(ctx context.Context, task *Task) error {

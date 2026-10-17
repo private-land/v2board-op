@@ -178,10 +178,14 @@ func (e *Executor) Execute(parent context.Context, task *Task, heartbeat time.Du
 		return
 	}
 	if current != task.TargetIP {
-		retry(errors.New("saved target IP no longer belongs to instance; manual inspection required"))
+		finish("superseded", "IP changed; later superseded by another IP; no further mutations")
 		return
 	}
 	if err := fence(ctx); err != nil {
+		return
+	}
+	if err := e.API.ChangeIP(ctx, task); err != nil {
+		retry(err)
 		return
 	}
 	if err := e.Cloud.DNS(ctx, task); err != nil {
@@ -193,25 +197,8 @@ func (e *Executor) Execute(parent context.Context, task *Task, heartbeat time.Du
 			return
 		}
 	}
-	results, err := e.API.Probe(ctx, hostsFor(task, task.TargetIP))
-	if err != nil {
-		retry(err)
-		return
-	}
-	for _, h := range hostsFor(task, task.TargetIP) {
-		v := results[fmt.Sprintf("%s:%d", h.Host, h.Port)]
-		if v == nil || !*v {
-			retry(errors.New("target probe not confirmed"))
-			return
-		}
-	}
-	if err := progress("verified", task.TargetIP); err != nil {
-		return
-	}
-	if !task.RegistrationReady {
-		retry(errors.New("registration not ready"))
-		return
-	}
+	// Completion confirms the IP change and DNS reconciliation.
+	// Target reachability is monitored separately from this task.
 	finish("completed", "")
 }
 func hostsFor(t *Task, ip string) []Host {

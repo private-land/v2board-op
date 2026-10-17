@@ -35,3 +35,13 @@ retries inspect the saved AWS instance and reconcile DNS without another IP
 rotation. Ambiguous interrupted rotations or an externally changed IP require
 manual inspection and stop further mutations. Mieru always uses dynamic IPs;
 other server types retain the existing static/dynamic selection policy.
+
+
+After AWS confirms a new IP, the worker requires a successful panel `changeIp`
+confirmation and DNS reconciliation. It does not probe the target IP. Saved
+IP tasks retry only follow-up work, without repeating the cloud mutation.
+
+Version 0.6.2 recognizes explicit rotation conflict codes. Registration identity
+conflicts are distinct from a lost lease; unrecognized server responses never
+expose response bodies or authentication tokens in task errors. Deploy the panel
+registration-rebuild fix before this worker.

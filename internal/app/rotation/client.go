@@ -52,6 +52,7 @@ type API interface {
 	Progress(context.Context, *Task, string, string) (*Task, error)
 	Finish(context.Context, *Task, string, string) error
 	Probe(context.Context, []Host) (map[string]*bool, error)
+	ChangeIP(context.Context, *Task) error
 }
 type Client struct {
 	BaseURL, Token string
@@ -59,6 +60,10 @@ type Client struct {
 }
 
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, body, out any) error {
+	return c.requestInternal(ctx, method, "/rotation"+path, query, body, out)
+}
+
+func (c *Client) requestInternal(ctx context.Context, method, path string, query url.Values, body, out any) error {
 	if query == nil {
 		query = url.Values{}
 	}
@@ -69,11 +74,12 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 			return err
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+"/api/v1/server/internal/rotation"+path+"?"+query.Encode(), &data)
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+"/api/v1/server/internal"+path+"?"+query.Encode(), &data)
 	if err != nil {
 		return errors.New("invalid rotation API URL")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	h := c.HTTP
 	if h == nil {
 		h = &http.Client{Timeout: 15 * time.Second}
@@ -83,17 +89,90 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 		return errors.New("rotation API transport failure")
 	}
 	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode == 409 {
-		return ErrLeaseLost
-	}
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("rotation API status %d", res.StatusCode)
+		return responseError(res)
 	}
 	if out == nil {
 		_, err = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<20))
 		return err
 	}
 	return json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(out)
+}
+
+// APIError exposes only a bounded, recognized business code, never response
+// bodies or token-bearing request URLs.
+type APIError struct {
+	StatusCode int
+	Code       string
+}
+
+func (e *APIError) Error() string {
+	if e.Code == "stale_rotation_lease" {
+		return ErrLeaseLost.Error()
+	}
+	if e.Code != "" {
+		return fmt.Sprintf("rotation API status %d (%s)", e.StatusCode, e.Code)
+	}
+	return fmt.Sprintf("rotation API status %d", e.StatusCode)
+}
+
+func (e *APIError) Is(target error) bool {
+	return target == ErrLeaseLost && e.StatusCode == http.StatusConflict && e.Code == "stale_rotation_lease"
+}
+
+func responseError(res *http.Response) error {
+	code := res.Header.Get("X-Rotation-Error")
+	switch code {
+	case "stale_rotation_lease", "rotation_generation_mismatch", "rotation_target_identity_missing", "rotation_configuration_changed", "registration_generation_conflict", "registration_identity_ambiguous":
+	default:
+		code = ""
+	}
+	if res.StatusCode == http.StatusConflict && code == "" {
+		// Older panels expose these exact messages without the machine-readable header.
+		var body struct {
+			Message string `json:"message"`
+		}
+		if json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&body) == nil {
+			switch body.Message {
+			case "Stale lease", "Stale rotation lease":
+				code = "stale_rotation_lease"
+			case "Instance registration no longer matches source or target IP":
+				code = "registration_generation_conflict"
+			case "Rotation generation mismatch":
+				code = "rotation_generation_mismatch"
+			}
+		}
+	}
+	return &APIError{StatusCode: res.StatusCode, Code: code}
+}
+
+// ChangeIP commits the AWS-confirmed IP to the panel before DNS reconciliation.
+// Retries use the saved IP; the panel makes registration updates and notices idempotent.
+func (c *Client) ChangeIP(ctx context.Context, task *Task) error {
+	seen := map[string]bool{}
+	for _, target := range task.Targets {
+		key := fmt.Sprintf("%s:%d", target.Type, target.ID)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		body := map[string]any{"type": target.Type, "id": target.ID, "source_ip": task.SourceIP, "target_ip": task.TargetIP}
+		body["rotation_task_id"] = task.ID
+		body["lease_token"] = task.LeaseToken
+		if task.InstanceName != "" {
+			body["instance_name"] = task.InstanceName
+		}
+		var result struct {
+			Data bool `json:"data"`
+		}
+		if err := c.requestInternal(ctx, "POST", "/changeIp", nil, body, &result); err != nil {
+			return err
+		}
+		if !result.Data {
+			return errors.New("panel rejected IP update")
+		}
+	}
+	return nil
 }
 func (c *Client) Config(ctx context.Context, tags []string) (Config, error) {
 	var r struct {
